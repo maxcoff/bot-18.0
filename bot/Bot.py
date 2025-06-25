@@ -59,6 +59,7 @@ class Bot(Okx):
         self.stop_flag = int(os.getenv('STOP', 0))
 
         self.max_sum = float(os.getenv('MAX_SUM'))
+        #self.max_eq = float(os.getenv('MAX_EQ'))
         self.TP_sz = float(os.getenv('TP', '0.4'))
         #self.qTP = int(os.getenv('qTP'))
         self.hedgeSL = float(os.getenv('HEDGE_SL'))
@@ -175,7 +176,8 @@ class Bot(Okx):
             long_sum = long_pos [6]                     # сумма позиции в USD
             short_cTime = short_pos[7]                  # время создания
             long_cTime = long_pos[7]                    # время создания
-            
+            s_bePx = short_pos[8]                       # цена безубыточности
+            l_bePx = long_pos[8]                        # цена безубыточности
 
             Short_clOrdId = self.clOrdId + "short"
             Long_clOrdId = self.clOrdId + "long"
@@ -211,6 +213,7 @@ class Bot(Okx):
             global OldLongOrderPrice            
             global last_hedge
             
+            
 
             '''# расчет ТP в режиме хеджирования
             if shortPos == True or longPos == True:
@@ -222,8 +225,23 @@ class Bot(Okx):
             
              # если сумма лубой из позиций выше пороговой, то множитель хеджа = HEDGE_MULTIPLE_RESERV
             hedge_mult = self.hedge_multiple
+            TP_sz = self.TP_sz
             if long_sum >= self.max_sum or short_sum >= self.max_sum:
                 hedge_mult = self.hedge_multiple_reserv
+
+            if l_pos >= self.qty * self.hedge_multiple or s_pos >= self.qty * self.hedge_multiple:                
+                TP_sz = self.TP_sz * 1.3
+
+            if l_pos >= self.qty * self.hedge_multiple ** 2  or s_pos >= self.qty * self.hedge_multiple ** 2:
+                hedge_mult = self.hedge_multiple / 2 
+                TP_sz = self.TP_sz * 2
+
+            if l_pos >= self.qty * self.hedge_multiple ** 3  or s_pos >= self.qty * self.hedge_multiple ** 3:
+                hedge_mult = self.hedge_multiple / 3 
+                TP_sz = self.TP_sz * 3
+
+            
+            
 
             #y = self.Ep * (1+(s_pos + l_pos)/self.qty/100*3)
             #y = round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)
@@ -235,8 +253,12 @@ class Bot(Okx):
                 if long_upl <= self.hedgeSL :           # crossout                                                            and sma_trend < 0
                     # запрет  лимитных ордеров                                                     
                     short_limit_Flag = 0 ; long_limit_Flag = 0                           # запрет лимитных ордеров
-                    if short_id !=0 : CancelOrder = self.cancel_order(short_id)    # снимаем лимитный шорт ордер
-                    if long_id !=0 : CancelOrder = self.cancel_order(long_id)    # снимаем лимитный лонг ордер                        
+                    if short_id !=0 : 
+                        CancelOrder = self.cancel_order(short_id)    # снимаем лимитный шорт ордер                                            
+                        if CancelOrder [1] == 0: short_id = 0
+                    if long_id !=0 : 
+                        CancelOrder = self.cancel_order(long_id)     # снимаем лимитный лонг ордер                        
+                        if CancelOrder [1] == 0: long_id = 0
 
                     if shortPos == False :
                         res = self.place_hedge_order('sell', 'short', round(l_pos * hedge_mult,self.round_contract))
@@ -249,28 +271,31 @@ class Bot(Okx):
                         
                         #newSTpTriggerPx = (S_C_short * s_pos * SposPrice - l_pos * LposPrice) / (S_C_short * s_pos - l_pos) # формула расчета баланса позиций breakeven
                         #newSTpTriggerPx = (l_pos * LposPrice * (1 + 0.0002) - s_pos * SposPrice * (1 + 0.0002)) / (l_pos * (1 - 0.0005) - s_pos * (1 + 0.0005)) # формула расчета баланса позиций breakeven
-                        newSTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 - self.fee_open)) / (l_pos * (1 - self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
+                        #newSTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 + self.fee_open)) / (l_pos * (1 + self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
+                        newTpTriggerPx = self.newTPSLprice(l_pos, LposPrice, s_pos, SposPrice)
+
                         
                         
-                        print ("newSTpTriggerPx ",newSTpTriggerPx)
+                        
+                        print ("newTpTriggerPx ",newTpTriggerPx)
                         print ("last_price",last_price)
                         #print ("SposPrice",SposPrice)
                         #print ("LposPrice",LposPrice)
                         
                         
-                        S_tp = self.place_algo_tp_order('buy', 'short', newSTpTriggerPx, Short_clOrdId) # устанавливаем TP на шорт
-                        #SSlTriggerPx = LposPrice + LposPrice /100*self.TP_sz               # вычисляем цену SL
-                        #S_tp = self.place_algo_tp_sl_order('buy', 'short', newSTpTriggerPx, SSlTriggerPx, Short_clOrdId )  # устанавливаем SL TP на шорт                 
+                        S_tp = self.place_algo_tp_order('buy', 'short', newTpTriggerPx, Short_clOrdId) # устанавливаем TP на шорт
                         print ("TP шорта",S_tp)
-                        if S_tp[1] == 51277:
+                        if S_tp[1] == 51277 and last_price < s_bePx and s_bePx != 0:
                                 print ("закрываем ТР по маркету 51277", s_pos )
                                 close_order = self.place_market_order('buy', 'short', s_pos)
                                 print ("close TP order", close_order)
                         else:
                             del_algo = self.cancel_algo_order(L_algoOrdId) # чистим лонг
-                            print ("чистим лонг",del_algo)
-                            LTpTriggerPx = LposPrice + LposPrice /100*self.TP_sz               # вычисляем цену TP                                                                    
-                            l_SL = self.place_algo_tp_sl_order('sell', 'long', LTpTriggerPx, newSTpTriggerPx, Long_clOrdId)  # устанавливаем SL TP на лонг
+                            print ("чистим лонг")
+                            if del_algo[1] == 0: print ("ордера на лонге удалены")
+                            if del_algo[1] == 51000: print ("ордеров на лонге небыло")
+                            LTpTriggerPx = LposPrice + LposPrice /100*TP_sz               # вычисляем цену TP                                                                    
+                            l_SL = self.place_algo_tp_sl_order('sell', 'long', LTpTriggerPx, newTpTriggerPx, Long_clOrdId)  # устанавливаем SL TP на лонг
                             print ("TP/SL лонга", l_SL)
             
             if shortPos == True and last_hedge <= 0:
@@ -278,8 +303,12 @@ class Bot(Okx):
                 if short_upl <= self.hedgeSL :              # crossover                                           and sma_trend > 0
                     # запрет снятие лимитных ордеров                                                     
                     short_limit_Flag = 0 ; long_limit_Flag = 0                           # запрет лимитных ордеров
-                    if short_id !=0 : CancelOrder = self.cancel_order(short_id)    # снимаем лимитный шорт ордер
-                    if long_id !=0 : CancelOrder = self.cancel_order(long_id)    # снимаем лимитный лонг ордер                        
+                    if short_id !=0 : 
+                        CancelOrder = self.cancel_order(short_id)    # снимаем лимитный шорт ордер                                            
+                        if CancelOrder [1] == 0: short_id = 0
+                    if long_id !=0 : 
+                        CancelOrder = self.cancel_order(long_id)     # снимаем лимитный лонг ордер                        
+                        if CancelOrder [1] == 0: long_id = 0
 
                     if longPos == False :                        
                         res = self.place_hedge_order('buy', 'long', round(s_pos * hedge_mult,self.round_contract))
@@ -290,27 +319,27 @@ class Bot(Okx):
                         LposPrice = long_pos[2]                     # цена открытия позиции
                         l_pos = long_pos[4]                         # кол-во контрактов
 
-                        
-                        newLTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 - self.fee_open)) / (l_pos * (1 - self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
-
+                        newTpTriggerPx = self.newTPSLprice(l_pos, LposPrice, s_pos, SposPrice)
+                        #newLTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 + self.fee_open)) / (l_pos * (1 + self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
+                        # newLTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 - self.fee_open)) / (l_pos * (1 - self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
                         #newLTpTriggerPx = (L_C_short * s_pos * SposPrice + S_fee - l_pos * LposPrice + L_fee) / (L_C_short * s_pos + (S_fee/SposPrice) - l_pos + (L_fee/LposPrice)) # формула расчета баланса позиций breakeven
 
-                        print ("newLTpTriggerPx", newLTpTriggerPx)
+                        print ("newTpTriggerPx", newTpTriggerPx)
                         print ("last_price",last_price)
 
-                        L_tp = self.place_algo_tp_order('sell', 'long', newLTpTriggerPx, Long_clOrdId)   # устанавливаем TP на лонг   
-                        #LSlTriggerPx = SposPrice - SposPrice /100*self.TP_sz               # вычисляем цену SL
-                        #L_tp = self.place_algo_tp_sl_order('sell', 'long', newLTpTriggerPx, LSlTriggerPx, Long_clOrdId )  # устанавливаем SL TP на лонг                  
+                        L_tp = self.place_algo_tp_order('sell', 'long', newTpTriggerPx, Long_clOrdId)   # устанавливаем TP на лонг   
                         print ("TP лонга",L_tp)
-                        if L_tp[1] == 51279:
+                        if L_tp[1] == 51279 and last_price > l_bePx and l_bePx != 0:
                             print ("закрываем ТР по маркету 51279", l_pos )
                             close_order = self.place_market_order('sell', 'long', l_pos)
                             print ("close TP order", close_order)
                         else:
                             del_algo = self.cancel_algo_order(S_algoOrdId)                          # чистим шорт
-                            print ("чистим шорт",del_algo)
-                            STpTriggerPx = SposPrice - SposPrice /100*self.TP_sz               # вычисляем цену TP                                                                                     
-                            s_SL = self.place_algo_tp_sl_order('buy', 'short', STpTriggerPx, newLTpTriggerPx, Short_clOrdId )  # устанавливаем SL TP на шорт                 
+                            print ("чистим шорт")
+                            if del_algo[1] == 0: print ("ордера на шорте удалены")
+                            if del_algo[1] == 51000: print ("ордеров на шорте небыло")
+                            STpTriggerPx = SposPrice - SposPrice /100*TP_sz               # вычисляем цену TP                                                                                     
+                            s_SL = self.place_algo_tp_sl_order('buy', 'short', STpTriggerPx, newTpTriggerPx, Short_clOrdId )  # устанавливаем SL TP на шорт                 
                             print("TP/SL шорта", s_SL)
 
                 # обновление TP в режиме хеджирования
@@ -319,33 +348,39 @@ class Bot(Okx):
                     #if S_algoOrdId != 0 : 
                         last_hedge = -1                        
                         
-                        LTpTriggerPx = LposPrice + LposPrice /100*self.TP_sz               # вычисляем цену TP                    
+                        LTpTriggerPx = LposPrice + LposPrice /100*TP_sz               # вычисляем цену TP                    
                         
                         #newSTpTriggerPx = (S_C_short * s_pos * SposPrice - l_pos * LposPrice) / (S_C_short * s_pos - l_pos) # формула расчета баланса позиций breakeven
                         #AnewSTpTriggerPx = (S_C_short * s_pos * SposPrice + S_fee - l_pos * LposPrice + L_fee) / (S_C_short * s_pos  - l_pos )
                         #AnewSTpTriggerPx = (l_pos * LposPrice * (1 - L_fee) + s_pos * SposPrice * (1 - S_fee)) / (s_pos * (1 - S_fee) + l_pos * (1 - L_fee))
-                        newSTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 - self.fee_open)) / (l_pos * (1 - self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
-                        print ("newSTpTriggerPx ",newSTpTriggerPx)
+                        #newSTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 + self.fee_open)) / (l_pos * (1 + self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
+                        newTpTriggerPx = self.newTPSLprice(l_pos, LposPrice, s_pos, SposPrice)
+                        
                         
 
                         # проверка размера шортового TP                        
-                        if S_algoTPpx > newSTpTriggerPx + newSTpTriggerPx/100*0.1 or S_algoTPpx == 0: 
-                            print ("debug 1")
+                        if S_algoTPpx > newTpTriggerPx + newTpTriggerPx/100*0.1 or S_algoTPpx == 0:                             
                             del_algo = self.cancel_algo_order(S_algoOrdId) # чистим шорт
+                            print ("чистим шорт2")
+                            #print (del_algo)                            
+                            if del_algo[1] == 0: print ("ордера на шорте удалены")
+                            if del_algo[1] == 51000: print ("ордеров на шорте небыло")
                             print ("обновление высокого TP для шортовой позиции")
                             #print (del_algo)                            
-                            print ("newSTpTriggerPx", newSTpTriggerPx)                            
-                            S_tp = self.place_algo_tp_order('buy', 'short', newSTpTriggerPx, Short_clOrdId) # устанавливаем TP на шорт
-                            #SSlTriggerPx = LposPrice + LposPrice /100*self.TP_sz               # вычисляем цену SL                                                                                     
-                            #S_tp = self.place_algo_tp_sl_order('buy', 'short', newSTpTriggerPx, SSlTriggerPx, Short_clOrdId )  # устанавливаем SL TP на шорт                 
+                            print ("newTpTriggerPx", newTpTriggerPx)             
+                            print ("last_price",last_price)               
+
+                            S_tp = self.place_algo_tp_order('buy', 'short', newTpTriggerPx, Short_clOrdId) # устанавливаем TP на шорт                            
                             print ("TP",S_tp)                            
-                            if S_tp[1] == 51277:
+                            if S_tp[1] == 51277 and last_price < s_bePx and s_bePx != 0:
                                 print ("закрываем ТР по маркету 51277", s_pos )
                                 close_order = self.place_market_order('buy', 'short', s_pos)
                                 print ("close TP order", close_order)
                             del_algo = self.cancel_algo_order(L_algoOrdId) # чистим лонг
-                            print ("чистим лонг",del_algo)
-                            l_SL = self.place_algo_tp_sl_order('sell', 'long', LTpTriggerPx, newSTpTriggerPx, Long_clOrdId)  # устанавливаем SL TP на лонг
+                            print ("чистим лонг2")
+                            if del_algo[1] == 0: print ("ордера на лонге удалены")
+                            if del_algo[1] == 51000: print ("ордеров на лонге небыло")
+                            l_SL = self.place_algo_tp_sl_order('sell', 'long', LTpTriggerPx, newTpTriggerPx, Long_clOrdId)  # устанавливаем SL TP на лонг
                             print("установка нового большого SL и маленького TP на лонг",l_SL)
 
                         # удаление высокого TP для лонговой позиции
@@ -358,34 +393,48 @@ class Bot(Okx):
                     #if L_algoOrdId != 0 : 
                         last_hedge = 1                               
                         
-                        STpTriggerPx = SposPrice - SposPrice /100*self.TP_sz               # вычисляем цену TP                      
+                        STpTriggerPx = SposPrice - SposPrice /100*TP_sz               # вычисляем цену TP                      
 
                         #newLTpTriggerPx = (L_C_short * s_pos * SposPrice - l_pos * LposPrice) / (L_C_short * s_pos - l_pos) # формула расчета баланса позиций breakeven                                            
                         
-                        newLTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 - self.fee_open)) / (l_pos * (1 - self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
-                        
+                        #newLTpTriggerPx = (l_pos * LposPrice * (1 + self.fee_open) - s_pos * SposPrice * (1 + self.fee_open)) / (l_pos * (1 + self.fee_close) - s_pos * (1 + self.fee_close) - round(self.Ep * (1+(s_pos + l_pos)/self.qty/100/10),2)) # формула расчета баланса позиций breakeven
+                        newTpTriggerPx = self.newTPSLprice(l_pos, LposPrice, s_pos, SposPrice)
+
                         # проверка размера лонгового TP                        
-                        if L_algoTPpx < newLTpTriggerPx - newLTpTriggerPx/100*0.1:
+                        if L_algoTPpx < newTpTriggerPx - newTpTriggerPx/100*0.1:
                             del_algo = self.cancel_algo_order(L_algoOrdId)                          # чистим лонг
-                            print ("обновление высокого TP для лонговой позиции")
-                            print (del_algo)                            
-                            print ("newLTpTriggerPx", newLTpTriggerPx)
-                            L_tp = self.place_algo_tp_order('sell', 'long', newLTpTriggerPx, Long_clOrdId)   # устанавливаем TP на лонг                 
-                            #LSlTriggerPx = SposPrice - SposPrice /100*self.TP_sz               # вычисляем цену SL                                                                                     
-                            #L_tp = self.place_algo_tp_sl_order('sell', 'long', newLTpTriggerPx, LSlTriggerPx, Long_clOrdId )  # устанавливаем SL TP на лонг                 
+                            print ("чистим лонг3")
+                            #print (del_algo)                            
+                            if del_algo[1] == 0: print ("ордера на лонге удалены")
+                            if del_algo[1] == 51000: print ("ордеров на лонге небыло")
+                            print ("обновление высокого TP для лонговой позиции")                            
+                            print ("newTpTriggerPx", newTpTriggerPx)
+                            print ("last_price",last_price)
+                            L_tp = self.place_algo_tp_order('sell', 'long', newTpTriggerPx, Long_clOrdId)   # устанавливаем TP на лонг                                             
                             print ("TP",L_tp)
-                            if L_tp[1] == 51279:
+                            if L_tp[1] == 51279 and last_price > l_bePx and l_bePx != 0:
                                 print ("закрываем ТР по маркету 51279", l_pos )
                                 close_order = self.place_market_order('sell', 'long', l_pos)
                                 print ("close TP order", close_order)
                             del_algo = self.cancel_algo_order(S_algoOrdId)                          # чистим шорт
-                            print ("чистим шорт",del_algo)
-                            s_SL = self.place_algo_tp_sl_order('buy', 'short', STpTriggerPx, newLTpTriggerPx, Short_clOrdId )  # устанавливаем SL TP на шорт
+                            print ("чистим шорт3")
+                            if del_algo[1] == 0: print ("ордера на шорте удалены")
+                            if del_algo[1] == 51000: print ("ордеров на шорте небыло")
+                            s_SL = self.place_algo_tp_sl_order('buy', 'short', STpTriggerPx, newTpTriggerPx, Short_clOrdId )  # устанавливаем SL TP на шорт
                             print("установка нового большого SL и маленького TP на шорт", s_SL)
                         # удаление высокого TP для шортовой позиции
                         #if S_algoTPpx > STpTriggerPx: 
                         #    del_algo = self.cancel_algo_order(S_algoOrdId)
                         #    print ("удаление высокого TP для шортовой позиции", del_algo)  
+                if s_pos == l_pos:
+                    # если вдруг случилось что позиции по объему равны, то проверяем безубыточность и закрываем их по маркету
+                    if last_price < s_bePx and s_bePx != 0:
+                        close_order = self.place_market_order('buy', 'short', s_pos)
+                        print ("close short pos", close_order)
+                    if last_price > l_bePx and l_bePx != 0:
+                        close_order = self.place_market_order('sell', 'long', l_pos)
+                        print ("close long pos", close_order)
+                    
                         
 
                 # закрытие режима хеджирования
@@ -409,12 +458,12 @@ class Bot(Okx):
             if shortPos == True and longPos == False and last_hedge >= 0 :   # если Шорт позиция найдена       
                     short_limit_Flag = 0 ; long_limit_Flag = 0                        # запрет лимитных ордеров                           
                     # установка TP
-                    STpTriggerPx = SposPrice - SposPrice /100*self.TP_sz               # вычисляем цену TP                                                         
+                    STpTriggerPx = SposPrice - SposPrice /100*TP_sz               # вычисляем цену TP                                                         
                     if S_algoOrdId == 0 : 
                         print ("устанавливаем ТР на шорт позицию")
                         S_tp = self.place_algo_tp_order('buy', 'short', STpTriggerPx, Short_clOrdId )
                         print("new_tp",S_tp)
-                        if S_tp[1] == 51277:
+                        if S_tp[1] == 51277 and last_price < s_bePx and s_bePx != 0:
                              print ("закрываем ТР по маркету 51277", s_pos )
                              close_order = self.place_market_order('buy', 'short', s_pos)
                              print ("close TP order", close_order)
@@ -424,12 +473,12 @@ class Bot(Okx):
             if longPos == True and shortPos == False and last_hedge <= 0 :   # если лонг позиция найдена                    
                     short_limit_Flag = 0 ; long_limit_Flag = 0                           # запрет лимитных ордеров                         
                     # установка TP
-                    LTpTriggerPx = LposPrice + LposPrice /100*self.TP_sz               # вычисляем цену TP                                        
+                    LTpTriggerPx = LposPrice + LposPrice /100*TP_sz               # вычисляем цену TP                                        
                     if L_algoOrdId == 0 : 
                         print ("устанавливаем ТР на лонг позицию")
                         L_tp = self.place_algo_tp_order('sell', 'long', LTpTriggerPx, Long_clOrdId) 
                         print("new_tp",L_tp)                       
-                        if L_tp[1] == 51279:
+                        if L_tp[1] == 51279 and last_price > l_bePx and l_bePx != 0:
                              print ("закрываем ТР по маркету 51279", l_pos )
                              close_order = self.place_market_order('sell', 'long', l_pos)
                              print ("close TP order", close_order)                             
@@ -512,13 +561,13 @@ class Bot(Okx):
         while True:    
             start_time = time.time()
             self.check()
-            
-            a = a + 1
+                        
             global last_volatility
-            if a == 1 : 
+            if a == 0 : 
                 last_volatility = self.volatility()
                 print ("last_volatility ",last_volatility)
                 #print (load_dotenv(dotenv_path=".env",override=True)) # перечитывание переменных окружения
+            a = a + 1
                 
             if a == 2 : a = 0
 
