@@ -1,7 +1,7 @@
 NAME = "Maxico OKX Trading BotS"
 
-API_KEY = "8173895c-d6bd-4aeb-9ffc-9f23f8a0830a"   # demo GF
-SECRET = "9C1B0EF268901785F55720EB9229E310"        # demo GF
+API_KEY = 
+SECRET = 
 
 PASSPHRASE = "Maxico12!"
 IS_DEMO = '1'
